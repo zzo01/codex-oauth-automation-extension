@@ -5,6 +5,7 @@ const STATUS_ICONS = {
   running: '',
   completed: '\u2713',  // ✓
   failed: '\u2717',     // ✗
+  stopped: '\u25A0',    // ■
 };
 
 const logArea = document.getElementById('log-area');
@@ -13,6 +14,8 @@ const displayLocalhostUrl = document.getElementById('display-localhost-url');
 const displayStatus = document.getElementById('display-status');
 const statusBar = document.getElementById('status-bar');
 const inputEmail = document.getElementById('input-email');
+const btnFetchEmail = document.getElementById('btn-fetch-email');
+const btnStop = document.getElementById('btn-stop');
 const btnReset = document.getElementById('btn-reset');
 const stepsProgress = document.getElementById('steps-progress');
 const btnAutoRun = document.getElementById('btn-auto-run');
@@ -132,6 +135,7 @@ function updateButtonStates() {
     if (row.classList.contains('completed')) statuses[step] = 'completed';
     else if (row.classList.contains('running')) statuses[step] = 'running';
     else if (row.classList.contains('failed')) statuses[step] = 'failed';
+    else if (row.classList.contains('stopped')) statuses[step] = 'stopped';
     else statuses[step] = 'pending';
   });
 
@@ -148,9 +152,15 @@ function updateButtonStates() {
     } else {
       const prevStatus = statuses[step - 1];
       const currentStatus = statuses[step];
-      btn.disabled = !(prevStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'completed');
+      btn.disabled = !(prevStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'completed' || currentStatus === 'stopped');
     }
   }
+
+  updateStopButtonState(anyRunning || autoContinueBar.style.display !== 'none');
+}
+
+function updateStopButtonState(active) {
+  btnStop.disabled = !active;
 }
 
 function updateStatusDisplay(state) {
@@ -169,6 +179,13 @@ function updateStatusDisplay(state) {
   if (failed) {
     displayStatus.textContent = `Step ${failed[0]} failed`;
     statusBar.classList.add('failed');
+    return;
+  }
+
+  const stopped = Object.entries(state.stepStatuses).find(([, s]) => s === 'stopped');
+  if (stopped) {
+    displayStatus.textContent = `Step ${stopped[0]} stopped`;
+    statusBar.classList.add('stopped');
     return;
   }
 
@@ -214,6 +231,37 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+async function fetchDuckEmail() {
+  const defaultLabel = 'Auto';
+  btnFetchEmail.disabled = true;
+  btnFetchEmail.textContent = '...';
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'FETCH_DUCK_EMAIL',
+      source: 'sidepanel',
+      payload: { generateNew: true },
+    });
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+    if (!response?.email) {
+      throw new Error('Duck email was not returned.');
+    }
+
+    inputEmail.value = response.email;
+    showToast(`Fetched ${response.email}`, 'success', 2500);
+    return response.email;
+  } catch (err) {
+    showToast(`Auto fetch failed: ${err.message}`, 'error');
+    throw err;
+  } finally {
+    btnFetchEmail.disabled = false;
+    btnFetchEmail.textContent = defaultLabel;
+  }
+}
+
 // ============================================================
 // Button Handlers
 // ============================================================
@@ -224,7 +272,7 @@ document.querySelectorAll('.step-btn').forEach(btn => {
     if (step === 3) {
       const email = inputEmail.value.trim();
       if (!email) {
-        showToast('Please paste email address first', 'warn');
+        showToast('Please paste email address or use Auto first', 'warn');
         return;
       }
       await chrome.runtime.sendMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step, email } });
@@ -232,6 +280,16 @@ document.querySelectorAll('.step-btn').forEach(btn => {
       await chrome.runtime.sendMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step } });
     }
   });
+});
+
+btnFetchEmail.addEventListener('click', async () => {
+  await fetchDuckEmail().catch(() => {});
+});
+
+btnStop.addEventListener('click', async () => {
+  btnStop.disabled = true;
+  await chrome.runtime.sendMessage({ type: 'STOP_FLOW', source: 'sidepanel', payload: {} });
+  showToast('Stopping current flow...', 'warn', 2000);
 });
 
 // Auto Run
@@ -246,7 +304,7 @@ btnAutoRun.addEventListener('click', async () => {
 btnAutoContinue.addEventListener('click', async () => {
   const email = inputEmail.value.trim();
   if (!email) {
-    showToast('Please paste DuckDuckGo email first!', 'warn');
+    showToast('Please fetch or paste DuckDuckGo email first!', 'warn');
     return;
   }
   autoContinueBar.style.display = 'none';
@@ -268,8 +326,10 @@ btnReset.addEventListener('click', async () => {
     document.querySelectorAll('.step-row').forEach(row => row.className = 'step-row');
     document.querySelectorAll('.step-status').forEach(el => el.textContent = '');
     btnAutoRun.disabled = false;
+    inputRunCount.disabled = false;
     btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Auto';
     autoContinueBar.style.display = 'none';
+    updateStopButtonState(false);
     updateButtonStates();
     updateProgressCounter();
   }
@@ -346,11 +406,15 @@ chrome.runtime.onMessage.addListener((message) => {
       logArea.innerHTML = '';
       document.querySelectorAll('.step-row').forEach(row => row.className = 'step-row');
       document.querySelectorAll('.step-status').forEach(el => el.textContent = '');
+      updateStopButtonState(false);
       updateProgressCounter();
       break;
     }
 
     case 'DATA_UPDATED': {
+      if (message.payload.email) {
+        inputEmail.value = message.payload.email;
+      }
       if (message.payload.oauthUrl) {
         displayOauthUrl.textContent = message.payload.oauthUrl;
         displayOauthUrl.classList.add('has-value');
@@ -369,21 +433,25 @@ chrome.runtime.onMessage.addListener((message) => {
         case 'waiting_email':
           autoContinueBar.style.display = 'flex';
           btnAutoRun.innerHTML = `Paused${runLabel}`;
+          updateStopButtonState(true);
           break;
         case 'running':
           btnAutoRun.innerHTML = `Running${runLabel}`;
+          updateStopButtonState(true);
           break;
         case 'complete':
           btnAutoRun.disabled = false;
           inputRunCount.disabled = false;
           btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Auto';
           autoContinueBar.style.display = 'none';
+          updateStopButtonState(false);
           break;
         case 'stopped':
           btnAutoRun.disabled = false;
           inputRunCount.disabled = false;
           btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Auto';
           autoContinueBar.style.display = 'none';
+          updateStopButtonState(false);
           break;
       }
       break;

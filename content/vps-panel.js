@@ -28,9 +28,15 @@ console.log('[MultiPage:vps-panel] Content script loaded on', location.href);
 // Listen for commands from Background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'EXECUTE_STEP') {
+    resetStopState();
     handleStep(message.step, message.payload).then(() => {
       sendResponse({ ok: true });
     }).catch(err => {
+      if (isStopError(err)) {
+        log(`Step ${message.step}: Stopped by user.`, 'warn');
+        sendResponse({ stopped: true, error: err.message });
+        return;
+      }
       reportError(message.step, err.message);
       sendResponse({ error: err.message });
     });
@@ -77,6 +83,7 @@ async function step1_getOAuthLink() {
   if (loginBtn.disabled) {
     log('Step 1: Login button is disabled (already loading), waiting for auth URL...');
   } else {
+    await humanPause(500, 1400);
     simulateClick(loginBtn);
     log('Step 1: Clicked login button, waiting for auth URL...');
   }
@@ -133,6 +140,7 @@ async function step9_vpsVerify(payload) {
     }
   }
 
+  await humanPause(600, 1500);
   fillInput(urlInput, localhostUrl);
   log(`Step 9: Filled callback URL: ${localhostUrl.slice(0, 80)}...`);
 
@@ -152,6 +160,7 @@ async function step9_vpsVerify(payload) {
     }
   }
 
+  await humanPause(450, 1200);
   simulateClick(submitBtn);
   log('Step 9: Clicked "提交回调 URL", waiting for authentication result...');
 

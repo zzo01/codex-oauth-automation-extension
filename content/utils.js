@@ -5,12 +5,37 @@ const SCRIPT_SOURCE = (() => {
   if (url.includes('auth0.openai.com') || url.includes('auth.openai.com') || url.includes('accounts.openai.com')) return 'signup-page';
   if (url.includes('mail.qq.com')) return 'qq-mail';
   if (url.includes('mail.163.com')) return 'mail-163';
+  if (url.includes('duckduckgo.com/email/settings/autofill')) return 'duck-mail';
   if (url.includes('chatgpt.com')) return 'chatgpt';
   // VPS panel — detected dynamically since URL is configurable
   return 'vps-panel';
 })();
 
 const LOG_PREFIX = `[MultiPage:${SCRIPT_SOURCE}]`;
+const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
+let flowStopped = false;
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'STOP_FLOW') {
+    flowStopped = true;
+    console.warn(LOG_PREFIX, STOP_ERROR_MESSAGE);
+  }
+});
+
+function resetStopState() {
+  flowStopped = false;
+}
+
+function isStopError(error) {
+  const message = typeof error === 'string' ? error : error?.message;
+  return message === STOP_ERROR_MESSAGE;
+}
+
+function throwIfStopped() {
+  if (flowStopped) {
+    throw new Error(STOP_ERROR_MESSAGE);
+  }
+}
 
 /**
  * Wait for a DOM element to appear.
@@ -20,6 +45,8 @@ const LOG_PREFIX = `[MultiPage:${SCRIPT_SOURCE}]`;
  */
 function waitForElement(selector, timeout = 10000) {
   return new Promise((resolve, reject) => {
+    throwIfStopped();
+
     const existing = document.querySelector(selector);
     if (existing) {
       console.log(LOG_PREFIX, `Found immediately: ${selector}`);
@@ -31,11 +58,25 @@ function waitForElement(selector, timeout = 10000) {
     console.log(LOG_PREFIX, `Waiting for: ${selector} (timeout: ${timeout}ms)`);
     log(`Waiting for selector: ${selector}...`);
 
+    let settled = false;
+    let stopTimer = null;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      clearTimeout(stopTimer);
+    };
+
     const observer = new MutationObserver(() => {
+      if (flowStopped) {
+        cleanup();
+        reject(new Error(STOP_ERROR_MESSAGE));
+        return;
+      }
       const el = document.querySelector(selector);
       if (el) {
-        observer.disconnect();
-        clearTimeout(timer);
+        cleanup();
         console.log(LOG_PREFIX, `Found after wait: ${selector}`);
         log(`Found element: ${selector}`);
         resolve(el);
@@ -48,11 +89,22 @@ function waitForElement(selector, timeout = 10000) {
     });
 
     const timer = setTimeout(() => {
-      observer.disconnect();
+      cleanup();
       const msg = `Timeout waiting for ${selector} after ${timeout}ms on ${location.href}`;
       console.error(LOG_PREFIX, msg);
       reject(new Error(msg));
     }, timeout);
+
+    const pollStop = () => {
+      if (settled) return;
+      if (flowStopped) {
+        cleanup();
+        reject(new Error(STOP_ERROR_MESSAGE));
+        return;
+      }
+      stopTimer = setTimeout(pollStop, 100);
+    };
+    pollStop();
   });
 }
 
@@ -65,6 +117,8 @@ function waitForElement(selector, timeout = 10000) {
  */
 function waitForElementByText(containerSelector, textPattern, timeout = 10000) {
   return new Promise((resolve, reject) => {
+    throwIfStopped();
+
     function search() {
       const candidates = document.querySelectorAll(containerSelector);
       for (const el of candidates) {
@@ -86,11 +140,25 @@ function waitForElementByText(containerSelector, textPattern, timeout = 10000) {
     console.log(LOG_PREFIX, `Waiting for text match: ${containerSelector} / ${textPattern}`);
     log(`Waiting for element with text: ${textPattern}...`);
 
+    let settled = false;
+    let stopTimer = null;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      clearTimeout(stopTimer);
+    };
+
     const observer = new MutationObserver(() => {
+      if (flowStopped) {
+        cleanup();
+        reject(new Error(STOP_ERROR_MESSAGE));
+        return;
+      }
       const el = search();
       if (el) {
-        observer.disconnect();
-        clearTimeout(timer);
+        cleanup();
         console.log(LOG_PREFIX, `Found by text after wait: ${textPattern}`);
         log(`Found element by text: ${textPattern}`);
         resolve(el);
@@ -103,11 +171,22 @@ function waitForElementByText(containerSelector, textPattern, timeout = 10000) {
     });
 
     const timer = setTimeout(() => {
-      observer.disconnect();
+      cleanup();
       const msg = `Timeout waiting for text "${textPattern}" in "${containerSelector}" after ${timeout}ms on ${location.href}`;
       console.error(LOG_PREFIX, msg);
       reject(new Error(msg));
     }, timeout);
+
+    const pollStop = () => {
+      if (settled) return;
+      if (flowStopped) {
+        cleanup();
+        reject(new Error(STOP_ERROR_MESSAGE));
+        return;
+      }
+      stopTimer = setTimeout(pollStop, 100);
+    };
+    pollStop();
   });
 }
 
@@ -118,6 +197,7 @@ function waitForElementByText(containerSelector, textPattern, timeout = 10000) {
  * @param {string} value
  */
 function fillInput(el, value) {
+  throwIfStopped();
   const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     'value'
@@ -135,6 +215,7 @@ function fillInput(el, value) {
  * @param {string} value
  */
 function fillSelect(el, value) {
+  throwIfStopped();
   el.value = value;
   el.dispatchEvent(new Event('change', { bubbles: true }));
   console.log(LOG_PREFIX, `Selected value ${value} in ${el.name || el.id}`);
@@ -209,6 +290,7 @@ function reportError(step, errorMessage) {
  * @param {Element} el
  */
 function simulateClick(el) {
+  throwIfStopped();
   el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   console.log(LOG_PREFIX, `Clicked: ${el.tagName} ${el.textContent?.slice(0, 30) || ''}`);
   log(`Clicked [${el.tagName}] "${el.textContent?.trim().slice(0, 30) || ''}"`);
@@ -220,7 +302,28 @@ function simulateClick(el) {
  * @returns {Promise<void>}
  */
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+
+    function tick() {
+      if (flowStopped) {
+        reject(new Error(STOP_ERROR_MESSAGE));
+        return;
+      }
+      if (Date.now() - start >= ms) {
+        resolve();
+        return;
+      }
+      setTimeout(tick, Math.min(100, Math.max(25, ms - (Date.now() - start))));
+    }
+
+    tick();
+  });
+}
+
+async function humanPause(min = 250, max = 850) {
+  const duration = Math.floor(Math.random() * (max - min + 1)) + min;
+  await sleep(duration);
 }
 
 // Auto-report ready on load

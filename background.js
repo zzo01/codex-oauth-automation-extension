@@ -3,6 +3,10 @@
 importScripts('data/names.js');
 
 const LOG_PREFIX = '[MultiPage:bg]';
+const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
+const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
+const HUMAN_STEP_DELAY_MIN = 700;
+const HUMAN_STEP_DELAY_MAX = 2200;
 
 // ============================================================
 // State Management (chrome.storage.session)
@@ -35,6 +39,18 @@ async function getState() {
 async function setState(updates) {
   console.log(LOG_PREFIX, 'storage.set:', JSON.stringify(updates).slice(0, 200));
   await chrome.storage.session.set(updates);
+}
+
+function broadcastDataUpdate(payload) {
+  chrome.runtime.sendMessage({
+    type: 'DATA_UPDATED',
+    payload,
+  }).catch(() => {});
+}
+
+async function setEmailState(email) {
+  await setState({ email });
+  broadcastDataUpdate({ email });
 }
 
 async function resetState() {
@@ -143,6 +159,15 @@ function flushCommand(source, tabId) {
   }
 }
 
+function cancelPendingCommands(reason = STOP_ERROR_MESSAGE) {
+  for (const [source, pending] of pendingCommands.entries()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+    pendingCommands.delete(source);
+    console.log(LOG_PREFIX, `Cancelled queued command for ${source}`);
+  }
+}
+
 // ============================================================
 // Reuse or create tab
 // ============================================================
@@ -151,9 +176,30 @@ async function reuseOrCreateTab(source, url, options = {}) {
   const alive = await isTabAlive(source);
   if (alive) {
     const tabId = await getTabId(source);
+    const currentTab = await chrome.tabs.get(tabId);
+    const sameUrl = currentTab.url === url;
+
+    const registry = await getTabRegistry();
+    if (sameUrl) {
+      await chrome.tabs.update(tabId, { active: true });
+      console.log(LOG_PREFIX, `Reused tab ${source} (${tabId}) on same URL`);
+
+      // For dynamically injected pages like the VPS panel, re-inject immediately.
+      // Waiting for a navigation event here will hang when the URL hasn't changed.
+      if (options.inject) {
+        if (registry[source]) registry[source].ready = false;
+        await setState({ tabRegistry: registry });
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: options.inject,
+        });
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      return tabId;
+    }
 
     // Mark as not ready BEFORE navigating — so READY signal from new page is captured correctly
-    const registry = await getTabRegistry();
     if (registry[source]) registry[source].ready = false;
     await setState({ tabRegistry: registry });
 
@@ -271,6 +317,50 @@ async function setStepStatus(step, status) {
   }).catch(() => {});
 }
 
+function isStopError(error) {
+  const message = typeof error === 'string' ? error : error?.message;
+  return message === STOP_ERROR_MESSAGE;
+}
+
+function clearStopRequest() {
+  stopRequested = false;
+}
+
+function throwIfStopped() {
+  if (stopRequested) {
+    throw new Error(STOP_ERROR_MESSAGE);
+  }
+}
+
+async function sleepWithStop(ms) {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    throwIfStopped();
+    await new Promise(r => setTimeout(r, Math.min(100, ms - (Date.now() - start))));
+  }
+}
+
+async function humanStepDelay(min = HUMAN_STEP_DELAY_MIN, max = HUMAN_STEP_DELAY_MAX) {
+  const duration = Math.floor(Math.random() * (max - min + 1)) + min;
+  await sleepWithStop(duration);
+}
+
+async function broadcastStopToContentScripts() {
+  const registry = await getTabRegistry();
+  for (const entry of Object.values(registry)) {
+    if (!entry?.tabId) continue;
+    try {
+      await chrome.tabs.sendMessage(entry.tabId, {
+        type: 'STOP_FLOW',
+        source: 'background',
+        payload: {},
+      });
+    } catch {}
+  }
+}
+
+let stopRequested = false;
+
 // ============================================================
 // Message Handler (central router)
 // ============================================================
@@ -307,6 +397,11 @@ async function handleMessage(message, sender) {
     }
 
     case 'STEP_COMPLETE': {
+      if (stopRequested) {
+        await setStepStatus(message.step, 'stopped');
+        notifyStepError(message.step, STOP_ERROR_MESSAGE);
+        return { ok: true };
+      }
       await setStepStatus(message.step, 'completed');
       await addLog(`Step ${message.step} completed`, 'ok');
       await handleStepData(message.step, message.payload);
@@ -315,9 +410,15 @@ async function handleMessage(message, sender) {
     }
 
     case 'STEP_ERROR': {
-      await setStepStatus(message.step, 'failed');
-      await addLog(`Step ${message.step} failed: ${message.error}`, 'error');
-      notifyStepError(message.step, message.error);
+      if (isStopError(message.error)) {
+        await setStepStatus(message.step, 'stopped');
+        await addLog(`Step ${message.step} stopped by user`, 'warn');
+        notifyStepError(message.step, message.error);
+      } else {
+        await setStepStatus(message.step, 'failed');
+        await addLog(`Step ${message.step} failed: ${message.error}`, 'error');
+        notifyStepError(message.step, message.error);
+      }
       return { ok: true };
     }
 
@@ -326,30 +427,34 @@ async function handleMessage(message, sender) {
     }
 
     case 'RESET': {
+      clearStopRequest();
       await resetState();
       await addLog('Flow reset', 'info');
       return { ok: true };
     }
 
     case 'EXECUTE_STEP': {
+      clearStopRequest();
       const step = message.payload.step;
       // Save email if provided (from side panel step 3)
       if (message.payload.email) {
-        await setState({ email: message.payload.email });
+        await setEmailState(message.payload.email);
       }
       await executeStep(step);
       return { ok: true };
     }
 
     case 'AUTO_RUN': {
+      clearStopRequest();
       const totalRuns = message.payload?.totalRuns || 1;
       autoRunLoop(totalRuns);  // fire-and-forget
       return { ok: true };
     }
 
     case 'RESUME_AUTO_RUN': {
+      clearStopRequest();
       if (message.payload.email) {
-        await setState({ email: message.payload.email });
+        await setEmailState(message.payload.email);
       }
       resumeAutoRun();  // fire-and-forget
       return { ok: true };
@@ -365,7 +470,18 @@ async function handleMessage(message, sender) {
 
     // Side panel data updates
     case 'SAVE_EMAIL': {
-      await setState({ email: message.payload.email });
+      await setEmailState(message.payload.email);
+      return { ok: true, email: message.payload.email };
+    }
+
+    case 'FETCH_DUCK_EMAIL': {
+      clearStopRequest();
+      const email = await fetchDuckEmail(message.payload || {});
+      return { ok: true, email };
+    }
+
+    case 'STOP_FLOW': {
+      await requestStop();
       return { ok: true };
     }
 
@@ -384,15 +500,11 @@ async function handleStepData(step, payload) {
     case 1:
       if (payload.oauthUrl) {
         await setState({ oauthUrl: payload.oauthUrl });
-        // Broadcast OAuth URL to side panel
-        chrome.runtime.sendMessage({
-          type: 'DATA_UPDATED',
-          payload: { oauthUrl: payload.oauthUrl },
-        }).catch(() => {});
+        broadcastDataUpdate({ oauthUrl: payload.oauthUrl });
       }
       break;
     case 3:
-      if (payload.email) await setState({ email: payload.email });
+      if (payload.email) await setEmailState(payload.email);
       break;
     case 4:
       if (payload.emailTimestamp) await setState({ lastEmailTimestamp: payload.emailTimestamp });
@@ -400,10 +512,7 @@ async function handleStepData(step, payload) {
     case 8:
       if (payload.localhostUrl) {
         await setState({ localhostUrl: payload.localhostUrl });
-        chrome.runtime.sendMessage({
-          type: 'DATA_UPDATED',
-          payload: { localhostUrl: payload.localhostUrl },
-        }).catch(() => {});
+        broadcastDataUpdate({ localhostUrl: payload.localhostUrl });
       }
       break;
   }
@@ -415,9 +524,11 @@ async function handleStepData(step, payload) {
 
 // Map of step -> { resolve, reject } for waiting on step completion
 const stepWaiters = new Map();
+let resumeWaiter = null;
 
 function waitForStepComplete(step, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
+    throwIfStopped();
     const timer = setTimeout(() => {
       stepWaiters.delete(step);
       reject(new Error(`Step ${step} timed out after ${timeoutMs / 1000}s`));
@@ -440,14 +551,59 @@ function notifyStepError(step, error) {
   if (waiter) waiter.reject(new Error(error));
 }
 
+async function markRunningStepsStopped() {
+  const state = await getState();
+  const runningSteps = Object.entries(state.stepStatuses || {})
+    .filter(([, status]) => status === 'running')
+    .map(([step]) => Number(step));
+
+  for (const step of runningSteps) {
+    await setStepStatus(step, 'stopped');
+  }
+}
+
+async function requestStop() {
+  if (stopRequested) return;
+
+  stopRequested = true;
+  cancelPendingCommands();
+  if (webNavListener) {
+    chrome.webNavigation.onBeforeNavigate.removeListener(webNavListener);
+    webNavListener = null;
+  }
+
+  await addLog('Stop requested. Cancelling current operations...', 'warn');
+  await broadcastStopToContentScripts();
+
+  for (const waiter of stepWaiters.values()) {
+    waiter.reject(new Error(STOP_ERROR_MESSAGE));
+  }
+  stepWaiters.clear();
+
+  if (resumeWaiter) {
+    resumeWaiter.reject(new Error(STOP_ERROR_MESSAGE));
+    resumeWaiter = null;
+  }
+
+  await markRunningStepsStopped();
+  autoRunActive = false;
+  await setState({ autoRunning: false });
+  chrome.runtime.sendMessage({
+    type: 'AUTO_RUN_STATUS',
+    payload: { phase: 'stopped', currentRun: autoRunCurrentRun, totalRuns: autoRunTotalRuns },
+  }).catch(() => {});
+}
+
 // ============================================================
 // Step Execution
 // ============================================================
 
 async function executeStep(step) {
   console.log(LOG_PREFIX, `Executing step ${step}`);
+  throwIfStopped();
   await setStepStatus(step, 'running');
   await addLog(`Step ${step} started`);
+  await humanStepDelay();
 
   const state = await getState();
 
@@ -471,8 +627,14 @@ async function executeStep(step) {
         throw new Error(`Unknown step: ${step}`);
     }
   } catch (err) {
+    if (isStopError(err)) {
+      await setStepStatus(step, 'stopped');
+      await addLog(`Step ${step} stopped by user`, 'warn');
+      throw err;
+    }
     await setStepStatus(step, 'failed');
     await addLog(`Step ${step} failed: ${err.message}`, 'error');
+    throw err;
   }
 }
 
@@ -482,13 +644,39 @@ async function executeStep(step) {
  * @param {number} delayAfter - ms to wait after completion (for page transitions)
  */
 async function executeStepAndWait(step, delayAfter = 2000) {
+  throwIfStopped();
   const promise = waitForStepComplete(step, 120000);
   await executeStep(step);
   await promise;
   // Extra delay for page transitions / DOM updates
   if (delayAfter > 0) {
-    await new Promise(r => setTimeout(r, delayAfter));
+    await sleepWithStop(delayAfter + Math.floor(Math.random() * 1200));
   }
+}
+
+async function fetchDuckEmail(options = {}) {
+  throwIfStopped();
+  const { generateNew = true } = options;
+
+  await addLog(`Duck Mail: Opening autofill settings (${generateNew ? 'generate new' : 'reuse current'})...`);
+  await reuseOrCreateTab('duck-mail', DUCK_AUTOFILL_URL);
+
+  const result = await sendToContentScript('duck-mail', {
+    type: 'FETCH_DUCK_EMAIL',
+    source: 'background',
+    payload: { generateNew },
+  });
+
+  if (result?.error) {
+    throw new Error(result.error);
+  }
+  if (!result?.email) {
+    throw new Error('Duck email not returned.');
+  }
+
+  await setEmailState(result.email);
+  await addLog(`Duck Mail: ${result.generated ? 'Generated' : 'Loaded'} ${result.email}`, 'ok');
+  return result.email;
 }
 
 // ============================================================
@@ -506,6 +694,7 @@ async function autoRunLoop(totalRuns) {
     return;
   }
 
+  clearStopRequest();
   autoRunActive = true;
   autoRunTotalRuns = totalRuns;
   await setState({ autoRunning: true });
@@ -524,32 +713,48 @@ async function autoRunLoop(totalRuns) {
     await setState(keepSettings);
     // Tell side panel to reset all UI
     chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => {});
-    await new Promise(r => setTimeout(r, 500));
+    await sleepWithStop(500);
 
     await addLog(`=== Auto Run ${run}/${totalRuns} — Phase 1: Get OAuth link & open signup ===`, 'info');
     const status = (phase) => ({ type: 'AUTO_RUN_STATUS', payload: { phase, currentRun: run, totalRuns } });
 
     try {
+      throwIfStopped();
       chrome.runtime.sendMessage(status('running')).catch(() => {});
 
       await executeStepAndWait(1, 2000);
       await executeStepAndWait(2, 2000);
 
-      // Pause for email
-      await addLog(`=== Run ${run}/${totalRuns} PAUSED: Paste DuckDuckGo email, click Continue ===`, 'warn');
-      chrome.runtime.sendMessage(status('waiting_email')).catch(() => {});
+      let emailReady = false;
+      try {
+        const duckEmail = await fetchDuckEmail({ generateNew: true });
+        await addLog(`=== Run ${run}/${totalRuns} — Duck email ready: ${duckEmail} ===`, 'ok');
+        emailReady = true;
+      } catch (err) {
+        await addLog(`Duck Mail auto-fetch failed: ${err.message}`, 'warn');
+      }
 
-      // Wait for RESUME_AUTO_RUN — sets a promise that resumeAutoRun resolves
-      await waitForResume();
+      if (!emailReady) {
+        await addLog(`=== Run ${run}/${totalRuns} PAUSED: Fetch Duck email or paste manually, then continue ===`, 'warn');
+        chrome.runtime.sendMessage(status('waiting_email')).catch(() => {});
 
-      const state = await getState();
-      if (!state.email) {
-        await addLog('Cannot resume: no email address.', 'error');
-        break;
+        // Wait for RESUME_AUTO_RUN — sets a promise that resumeAutoRun resolves
+        await waitForResume();
+
+        const resumedState = await getState();
+        if (!resumedState.email) {
+          await addLog('Cannot resume: no email address.', 'error');
+          break;
+        }
       }
 
       await addLog(`=== Run ${run}/${totalRuns} — Phase 2: Register, verify, login, complete ===`, 'info');
       chrome.runtime.sendMessage(status('running')).catch(() => {});
+
+      const signupTabId = await getTabId('signup-page');
+      if (signupTabId) {
+        await chrome.tabs.update(signupTabId, { active: true });
+      }
 
       await executeStepAndWait(3, 3000);
       await executeStepAndWait(4, 2000);
@@ -562,41 +767,49 @@ async function autoRunLoop(totalRuns) {
       await addLog(`=== Run ${run}/${totalRuns} COMPLETE! ===`, 'ok');
 
     } catch (err) {
-      await addLog(`Run ${run}/${totalRuns} failed: ${err.message}`, 'error');
+      if (isStopError(err)) {
+        await addLog(`Run ${run}/${totalRuns} stopped by user`, 'warn');
+      } else {
+        await addLog(`Run ${run}/${totalRuns} failed: ${err.message}`, 'error');
+      }
       chrome.runtime.sendMessage(status('stopped')).catch(() => {});
       break; // Stop on error
     }
   }
 
   const completedRuns = autoRunCurrentRun;
-  if (completedRuns >= autoRunTotalRuns) {
+  if (stopRequested) {
+    await addLog(`=== Stopped after ${Math.max(0, completedRuns - 1)}/${autoRunTotalRuns} runs ===`, 'warn');
+    chrome.runtime.sendMessage({ type: 'AUTO_RUN_STATUS', payload: { phase: 'stopped', currentRun: completedRuns, totalRuns: autoRunTotalRuns } }).catch(() => {});
+  } else if (completedRuns >= autoRunTotalRuns) {
     await addLog(`=== All ${autoRunTotalRuns} runs completed successfully ===`, 'ok');
+    chrome.runtime.sendMessage({ type: 'AUTO_RUN_STATUS', payload: { phase: 'complete', currentRun: completedRuns, totalRuns: autoRunTotalRuns } }).catch(() => {});
   } else {
     await addLog(`=== Stopped after ${completedRuns}/${autoRunTotalRuns} runs ===`, 'warn');
+    chrome.runtime.sendMessage({ type: 'AUTO_RUN_STATUS', payload: { phase: 'stopped', currentRun: completedRuns, totalRuns: autoRunTotalRuns } }).catch(() => {});
   }
-  chrome.runtime.sendMessage({ type: 'AUTO_RUN_STATUS', payload: { phase: 'complete', currentRun: completedRuns, totalRuns: autoRunTotalRuns } }).catch(() => {});
   autoRunActive = false;
   await setState({ autoRunning: false });
+  clearStopRequest();
 }
 
-// Promise-based pause/resume mechanism
-let resumeResolver = null;
-
 function waitForResume() {
-  return new Promise((resolve) => {
-    resumeResolver = resolve;
+  return new Promise((resolve, reject) => {
+    throwIfStopped();
+    resumeWaiter = { resolve, reject };
   });
 }
 
 async function resumeAutoRun() {
+  throwIfStopped();
   const state = await getState();
   if (!state.email) {
     await addLog('Cannot resume: no email address. Paste email in Side Panel first.', 'error');
     return;
   }
-  if (resumeResolver) {
-    resumeResolver();
-    resumeResolver = null;
+  if (resumeWaiter) {
+    resumeWaiter.resolve();
+    resumeWaiter = null;
   }
 }
 
@@ -823,7 +1036,7 @@ async function executeStep7(state) {
 }
 
 // ============================================================
-// Step 8: Complete OAuth (webNavigation listener + chatgpt.js navigates)
+// Step 8: Complete OAuth (manual click + localhost listener)
 // ============================================================
 
 let webNavListener = null;
@@ -833,7 +1046,7 @@ async function executeStep8(state) {
     throw new Error('No OAuth URL. Complete step 1 first.');
   }
 
-  await addLog('Step 8: Setting up localhost redirect listener...');
+  await addLog('Step 8: Setting up localhost redirect listener for manual confirmation...');
 
   // Register webNavigation listener (scoped to this step)
   return new Promise((resolve, reject) => {
@@ -843,9 +1056,9 @@ async function executeStep8(state) {
         webNavListener = null;
       }
       setStepStatus(8, 'failed');
-      addLog('Step 8: Localhost redirect not captured after 30s. Check if OAuth authorization completed.', 'error');
-      reject(new Error('Localhost redirect not captured after 30s. Check if OAuth authorization completed.'));
-    }, 30000);
+      addLog('Step 8: Localhost redirect not captured after 120s. Please confirm you clicked "继续" on the OAuth page.', 'error');
+      reject(new Error('Localhost redirect not captured after 120s. Please click "继续" on the OAuth page.'));
+    }, 120000);
 
     webNavListener = (details) => {
       if (details.url.startsWith('http://localhost')) {
@@ -858,10 +1071,7 @@ async function executeStep8(state) {
           addLog(`Step 8: Captured localhost URL: ${details.url}`, 'ok');
           setStepStatus(8, 'completed');
           notifyStepComplete(8, { localhostUrl: details.url });
-          chrome.runtime.sendMessage({
-            type: 'DATA_UPDATED',
-            payload: { localhostUrl: details.url },
-          }).catch(() => {});
+          broadcastDataUpdate({ localhostUrl: details.url });
           resolve();
         });
       }
@@ -870,28 +1080,16 @@ async function executeStep8(state) {
     chrome.webNavigation.onBeforeNavigate.addListener(webNavListener);
 
     // After step 7, the auth page shows a consent screen ("使用 ChatGPT 登录到 Codex")
-    // with a "继续" button. We need to click it, which triggers the localhost redirect.
+    // with a "继续" button. The user must click it manually.
     (async () => {
       try {
         const signupTabId = await getTabId('signup-page');
         if (signupTabId) {
           await chrome.tabs.update(signupTabId, { active: true });
-          await addLog('Step 8: Switching to auth page, clicking "继续" to complete OAuth...');
-          await sendToContentScript('signup-page', {
-            type: 'EXECUTE_STEP',
-            step: 8,
-            source: 'background',
-            payload: {},
-          });
+          await addLog('Step 8: Switched to auth page. Please click "继续" manually to complete OAuth.', 'warn');
         } else {
           await reuseOrCreateTab('signup-page', state.oauthUrl);
-          await addLog('Step 8: Auth tab reopened...');
-          await sendToContentScript('signup-page', {
-            type: 'EXECUTE_STEP',
-            step: 8,
-            source: 'background',
-            payload: {},
-          });
+          await addLog('Step 8: Auth tab reopened. Please click "继续" manually to complete OAuth.', 'warn');
         }
       } catch (err) {
         clearTimeout(timeout);

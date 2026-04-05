@@ -24,6 +24,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
           Auto
         </button>
+        <button id="btn-stop" class="btn btn-danger" title="Stop current flow" disabled>Stop</button>
       </div>
       <button id="btn-reset" class="btn btn-ghost" title="Reset all steps">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -56,7 +57,10 @@
       </div>
       <div class="data-row">
         <span class="data-label">Email</span>
-        <input type="text" id="input-email" class="data-input" placeholder="Paste DuckDuckGo email" />
+        <div class="data-inline">
+          <input type="text" id="input-email" class="data-input" placeholder="Paste DuckDuckGo email" />
+          <button id="btn-fetch-email" class="btn btn-outline btn-sm" type="button">Auto</button>
+        </div>
       </div>
       <div class="data-row">
         <span class="data-label">OAuth</span>
@@ -73,7 +77,7 @@
     </div>
     <div id="auto-continue-bar" class="auto-continue-bar" style="display:none;">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      <span class="auto-hint">Paste email above, then continue</span>
+      <span class="auto-hint">Use Auto to fetch Duck email, or paste manually, then continue</span>
       <button id="btn-auto-continue" class="btn btn-primary btn-sm">Continue</button>
     </div>
   </section>
@@ -121,7 +125,7 @@
       </div>
       <div class="step-row" data-step="8">
         <div class="step-indicator" data-step="8"><span class="step-num">8</span></div>
-        <button class="step-btn" data-step="8">Complete OAuth</button>
+        <button class="step-btn" data-step="8">Manual OAuth Confirm</button>
         <span class="step-status" data-step="8"></span>
       </div>
       <div class="step-row" data-step="9">
