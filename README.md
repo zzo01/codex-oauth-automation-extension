@@ -4,6 +4,36 @@
 
 当前版本基于侧边栏控制，支持单步执行、整套自动执行、停止当前流程、保存常用配置，以及通过 DuckDuckGo / QQ / 163 / Inbucket mailbox 协助获取验证码。
 
+## 最新版本测试结果
+
+最新版本实测 5 轮，0 次失败：
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/images/五轮结果.jpg" alt="最新版本五轮测试结果" width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/images/结果日志.png" alt="最新版本运行日志" width="100%" />
+    </td>
+  </tr>
+</table>
+
+## 打赏一下
+
+佬们觉得好用的话，也可以打赏小弟一杯奶茶哦
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/images/支付宝.jpg" alt="支付宝收款码" width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/images/微信.png" alt="微信收款码" width="100%" />
+    </td>
+  </tr>
+</table>
+
 ## 当前能力
 
 - 从 CPA 面板自动获取 OpenAI OAuth 授权链接
