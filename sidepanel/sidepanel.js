@@ -44,7 +44,6 @@ const btnAutoStartClose = document.getElementById('btn-auto-start-close');
 const btnAutoStartCancel = document.getElementById('btn-auto-start-cancel');
 const btnAutoStartRestart = document.getElementById('btn-auto-start-restart');
 const btnAutoStartContinue = document.getElementById('btn-auto-start-continue');
-const pageHeader = document.querySelector('header');
 const STEP_DEFAULT_STATUSES = {
   1: 'pending',
   2: 'pending',
@@ -112,13 +111,6 @@ function dismissToast(toast) {
   if (!toast.parentNode) return;
   toast.classList.add('toast-exit');
   toast.addEventListener('animationend', () => toast.remove());
-}
-
-function updateToastOffset() {
-  if (!toastContainer) return;
-  const headerBottom = pageHeader?.getBoundingClientRect().bottom ?? 0;
-  const offset = Math.max(12, Math.ceil(headerBottom + 8));
-  document.documentElement.style.setProperty('--toast-top-offset', `${offset}px`);
 }
 
 function resetActionModalButtons() {
@@ -1110,13 +1102,7 @@ btnTheme.addEventListener('click', () => {
 
 initializeManualStepActions();
 initTheme();
-updateToastOffset();
 updateSaveButtonState();
-window.addEventListener('resize', updateToastOffset);
-window.addEventListener('load', updateToastOffset);
-if (document.fonts?.ready) {
-  document.fonts.ready.then(updateToastOffset).catch(() => { });
-}
 restoreState().then(() => {
   syncPasswordToggleLabel();
   syncVpsUrlToggleLabel();
