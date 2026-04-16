@@ -7439,12 +7439,20 @@ async function executeStep5(state) {
 
   await addLog(`步骤 5：已生成姓名 ${firstName} ${lastName}，生日 ${year}-${month}-${day}`);
 
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 5,
-    source: 'background',
-    payload: { firstName, lastName, year, month, day },
-  });
+  await sendToContentScriptResilient(
+    'signup-page',
+    {
+      type: 'EXECUTE_STEP',
+      step: 5,
+      source: 'background',
+      payload: { firstName, lastName, year, month, day },
+    },
+    {
+      timeoutMs: 65000,
+      retryDelayMs: 700,
+      logMessage: '步骤 5：认证页正在切换，等待页面重新就绪后继续检测...',
+    }
+  );
 }
 
 // ============================================================
