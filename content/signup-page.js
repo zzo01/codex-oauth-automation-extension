@@ -548,6 +548,19 @@ function isStep5Ready() {
   );
 }
 
+function findStep5SubmitButton({ allowDisabled = false } = {}) {
+  const direct = document.querySelector('button[type="submit"], input[type="submit"]');
+  if (direct && isVisibleElement(direct) && (allowDisabled || isActionEnabled(direct))) {
+    return direct;
+  }
+
+  const candidates = document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]');
+  return Array.from(candidates).find((el) => {
+    if (!isVisibleElement(el) || (!allowDisabled && !isActionEnabled(el))) return false;
+    return /完成|create|continue|finish|done|agree/i.test(getActionText(el));
+  }) || null;
+}
+
 function detectStep5BypassState() {
   const path = location.pathname || '';
   const url = location.href || '';
@@ -816,6 +829,7 @@ async function waitForStep5SubmitOutcome(timeout = 30000) {
     assumed: true,
     assumedSuccess: true,
     timedOut: true,
+    stayedOnStep5: isStep5Ready(),
   };
 }
 
@@ -2085,7 +2099,7 @@ async function step5_fillNameBirthday(payload) {
 
   // Click "完成帐户创建" button
   await sleep(500);
-  const completeBtn = document.querySelector('button[type="submit"]')
+  const completeBtn = findStep5SubmitButton()
     || await waitForElementByText('button', /完成|create|continue|finish|done|agree/i, 5000).catch(() => null);
   if (!completeBtn) {
     throw new Error('未找到“完成帐户创建”按钮。URL: ' + location.href);
@@ -2095,7 +2109,17 @@ async function step5_fillNameBirthday(payload) {
   simulateClick(completeBtn);
   log('步骤 5：已点击“完成帐户创建”，正在等待页面结果...');
 
-  const outcome = await waitForStep5SubmitOutcome();
+  let outcome = await waitForStep5SubmitOutcome();
+  if (outcome.timedOut && outcome.stayedOnStep5) {
+    const retryBtn = findStep5SubmitButton();
+    if (retryBtn && isActionEnabled(retryBtn)) {
+      log('步骤 5：首次提交后页面仍停留在资料页，正在重试点击“完成帐户创建”...', 'warn');
+      await humanPause(350, 900);
+      simulateClick(retryBtn);
+      outcome = await waitForStep5SubmitOutcome(20000);
+    }
+  }
+
   if (outcome.invalidProfile) {
     throw new Error(`步骤 5：${outcome.errorText}`);
   }
