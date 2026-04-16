@@ -503,6 +503,7 @@ const OAUTH_CONSENT_PAGE_PATTERN = /使用\s*ChatGPT\s*登录到\s*Codex|sign\s+
 const OAUTH_CONSENT_FORM_SELECTOR = 'form[action*="/sign-in-with-chatgpt/" i][action*="/consent" i]';
 const CONTINUE_ACTION_PATTERN = /继续|continue/i;
 const ADD_PHONE_PAGE_PATTERN = /add[\s-]*phone|添加手机号|手机号码|手机号|phone\s+number|telephone/i;
+const STEP5_SUBMIT_ACTION_PATTERN = /完成|create|continue|finish|done|agree/i;
 const STEP5_SUBMIT_ERROR_PATTERN = /无法根据该信息创建帐户|请重试|unable\s+to\s+create\s+(?:your\s+)?account|couldn'?t\s+create\s+(?:your\s+)?account|something\s+went\s+wrong|invalid\s+(?:birthday|birth|date)|生日|出生日期/i;
 const STEP5_SUBMIT_INITIAL_TIMEOUT_MS = 30000;
 const STEP5_SUBMIT_RETRY_TIMEOUT_MS = 20000;
@@ -559,7 +560,7 @@ function findStep5SubmitButton({ allowDisabled = false } = {}) {
   const candidates = document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]');
   return Array.from(candidates).find((el) => {
     if (!isVisibleElement(el) || (!allowDisabled && !isActionEnabled(el))) return false;
-    return /完成|create|continue|finish|done|agree/i.test(getActionText(el));
+    return STEP5_SUBMIT_ACTION_PATTERN.test(getActionText(el));
   }) || null;
 }
 
@@ -2102,7 +2103,7 @@ async function step5_fillNameBirthday(payload) {
   // Click "完成帐户创建" button
   await sleep(500);
   const completeBtn = findStep5SubmitButton()
-    || await waitForElementByText('button', /完成|create|continue|finish|done|agree/i, 5000).catch(() => null);
+    || await waitForElementByText('button', STEP5_SUBMIT_ACTION_PATTERN, 5000).catch(() => null);
   if (!completeBtn) {
     throw new Error('未找到“完成帐户创建”按钮。URL: ' + location.href);
   }

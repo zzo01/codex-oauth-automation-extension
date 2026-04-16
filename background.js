@@ -5696,6 +5696,7 @@ let autoRunAttemptRun = 0;
 const EMAIL_FETCH_MAX_ATTEMPTS = 5;
 const VERIFICATION_POLL_MAX_ROUNDS = 5;
 const STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS = 25000;
+const STEP5_RESILIENT_TIMEOUT_MS = 65000;
 const AUTO_STEP_DELAYS = {
   1: 2000,
   2: 2000,
@@ -7448,7 +7449,7 @@ async function executeStep5(state) {
       payload: { firstName, lastName, year, month, day },
     },
     {
-      timeoutMs: 65000,
+      timeoutMs: STEP5_RESILIENT_TIMEOUT_MS,
       retryDelayMs: 700,
       logMessage: '步骤 5：认证页正在切换，等待页面重新就绪后继续检测...',
     }
