@@ -2115,7 +2115,7 @@ async function step5_fillNameBirthday(payload) {
   let outcome = await waitForStep5SubmitOutcome();
   if (outcome.timedOut && outcome.stayedOnStep5) {
     const retryBtn = findStep5SubmitButton();
-    if (retryBtn && isActionEnabled(retryBtn)) {
+    if (retryBtn) {
       log('步骤 5：首次提交后页面仍停留在资料页，正在重试点击“完成帐户创建”...', 'warn');
       await humanPause(350, 900);
       simulateClick(retryBtn);
