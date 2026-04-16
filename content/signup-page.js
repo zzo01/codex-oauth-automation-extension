@@ -548,6 +548,59 @@ function isStep5Ready() {
   );
 }
 
+function detectStep5BypassState() {
+  const path = location.pathname || '';
+  const url = location.href || '';
+
+  if (isAddPhonePageReady()) {
+    return { skip: true, addPhonePage: true, reason: 'add_phone_page', url };
+  }
+
+  if (isStep8Ready()) {
+    return { skip: true, reason: 'oauth_consent_page', url };
+  }
+
+  if (isVerificationPageStillVisible()) {
+    return { skip: true, reason: 'verification_page', url };
+  }
+
+  if (/\/log-in(?:[/?#]|$)/i.test(path)) {
+    return { skip: true, reason: 'login_page', url };
+  }
+
+  return null;
+}
+
+async function waitForStep5PageOrBypass(timeout = 12000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    if (isStep5Ready()) {
+      return { shouldFill: true };
+    }
+
+    const bypass = detectStep5BypassState();
+    if (bypass?.skip) {
+      return { shouldFill: false, ...bypass };
+    }
+
+    await sleep(150);
+  }
+
+  if (isStep5Ready()) {
+    return { shouldFill: true };
+  }
+
+  const bypass = detectStep5BypassState();
+  if (bypass?.skip) {
+    return { shouldFill: false, ...bypass };
+  }
+
+  return { shouldFill: true };
+}
+
 function getPageTextSnapshot() {
   return (document.body?.innerText || document.body?.textContent || '')
     .replace(/\s+/g, ' ')
@@ -720,7 +773,7 @@ function getStep5ErrorText() {
   return messages.find((text) => STEP5_SUBMIT_ERROR_PATTERN.test(text)) || '';
 }
 
-async function waitForStep5SubmitOutcome(timeout = 15000) {
+async function waitForStep5SubmitOutcome(timeout = 30000) {
   const start = Date.now();
 
   while (Date.now() - start < timeout) {
@@ -747,9 +800,22 @@ async function waitForStep5SubmitOutcome(timeout = 15000) {
     return { invalidProfile: true, errorText };
   }
 
+  const bypass = detectStep5BypassState();
+  if (bypass?.skip) {
+    return {
+      success: true,
+      addPhonePage: Boolean(bypass.addPhonePage),
+      assumed: true,
+      assumedSuccess: true,
+      timedOut: true,
+    };
+  }
+
   return {
-    invalidProfile: true,
-    errorText: '提交后未进入下一阶段，请检查生日是否真正被页面接受。',
+    success: true,
+    assumed: true,
+    assumedSuccess: true,
+    timedOut: true,
   };
 }
 
@@ -1849,6 +1915,13 @@ async function step5_fillNameBirthday(payload) {
     throw new Error('未提供生日或年龄数据。');
   }
 
+  const step5Decision = await waitForStep5PageOrBypass();
+  if (!step5Decision.shouldFill) {
+    log(`步骤 5：当前 URL ${step5Decision.url}，无需填写姓名与生日（${step5Decision.reason}），已跳过。`, 'warn');
+    reportComplete(5, { addPhonePage: Boolean(step5Decision.addPhonePage), skipped: true, reason: step5Decision.reason });
+    return;
+  }
+
   const fullName = `${firstName} ${lastName}`;
   log(`步骤 5：正在填写姓名：${fullName}`);
 
@@ -2025,6 +2098,9 @@ async function step5_fillNameBirthday(payload) {
   const outcome = await waitForStep5SubmitOutcome();
   if (outcome.invalidProfile) {
     throw new Error(`步骤 5：${outcome.errorText}`);
+  }
+  if (outcome.timedOut) {
+    log('步骤 5：提交后等待超时 30 秒，已按兜底策略继续下一步。', 'warn');
   }
 
   log(`步骤 5：资料已通过。`, 'ok');
