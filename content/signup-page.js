@@ -2100,7 +2100,7 @@ async function step5_fillNameBirthday(payload) {
     throw new Error(`步骤 5：${outcome.errorText}`);
   }
   if (outcome.timedOut) {
-    log('步骤 5：提交后等待超过 30 秒，已按兜底策略继续下一步。', 'warn');
+    log('步骤 5：提交后等待超时 30 秒，已按兜底策略继续下一步。', 'warn');
   }
 
   log(`步骤 5：资料已通过。`, 'ok');
