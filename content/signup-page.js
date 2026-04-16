@@ -551,15 +551,15 @@ function isStep5Ready() {
   );
 }
 
-function findStep5SubmitButton({ allowDisabled = false } = {}) {
+function findStep5SubmitButton() {
   const direct = document.querySelector('button[type="submit"], input[type="submit"]');
-  if (direct && isVisibleElement(direct) && (allowDisabled || isActionEnabled(direct))) {
+  if (direct && isVisibleElement(direct) && isActionEnabled(direct)) {
     return direct;
   }
 
   const candidates = document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]');
   return Array.from(candidates).find((el) => {
-    if (!isVisibleElement(el) || (!allowDisabled && !isActionEnabled(el))) return false;
+    if (!isVisibleElement(el) || !isActionEnabled(el)) return false;
     return STEP5_SUBMIT_ACTION_PATTERN.test(getActionText(el));
   }) || null;
 }
