@@ -504,6 +504,8 @@ const OAUTH_CONSENT_FORM_SELECTOR = 'form[action*="/sign-in-with-chatgpt/" i][ac
 const CONTINUE_ACTION_PATTERN = /继续|continue/i;
 const ADD_PHONE_PAGE_PATTERN = /add[\s-]*phone|添加手机号|手机号码|手机号|phone\s+number|telephone/i;
 const STEP5_SUBMIT_ERROR_PATTERN = /无法根据该信息创建帐户|请重试|unable\s+to\s+create\s+(?:your\s+)?account|couldn'?t\s+create\s+(?:your\s+)?account|something\s+went\s+wrong|invalid\s+(?:birthday|birth|date)|生日|出生日期/i;
+const STEP5_SUBMIT_INITIAL_TIMEOUT_MS = 30000;
+const STEP5_SUBMIT_RETRY_TIMEOUT_MS = 20000;
 const AUTH_TIMEOUT_ERROR_TITLE_PATTERN = /糟糕，出错了|something\s+went\s+wrong|oops/i;
 const AUTH_TIMEOUT_ERROR_DETAIL_PATTERN = /operation\s+timed\s+out|timed\s+out|请求超时|操作超时/i;
 const SIGNUP_EMAIL_EXISTS_PATTERN = /与此电子邮件地址相关联的帐户已存在|account\s+associated\s+with\s+this\s+email\s+address\s+already\s+exists|email\s+address.*already\s+exists/i;
@@ -786,7 +788,7 @@ function getStep5ErrorText() {
   return messages.find((text) => STEP5_SUBMIT_ERROR_PATTERN.test(text)) || '';
 }
 
-async function waitForStep5SubmitOutcome(timeout = 30000) {
+async function waitForStep5SubmitOutcome(timeout = STEP5_SUBMIT_INITIAL_TIMEOUT_MS) {
   const start = Date.now();
 
   while (Date.now() - start < timeout) {
@@ -2116,7 +2118,7 @@ async function step5_fillNameBirthday(payload) {
       log('步骤 5：首次提交后页面仍停留在资料页，正在重试点击“完成帐户创建”...', 'warn');
       await humanPause(350, 900);
       simulateClick(retryBtn);
-      outcome = await waitForStep5SubmitOutcome(20000);
+      outcome = await waitForStep5SubmitOutcome(STEP5_SUBMIT_RETRY_TIMEOUT_MS);
     }
   }
 
