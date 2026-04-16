@@ -802,12 +802,19 @@ async function waitForStep5SubmitOutcome(timeout = 30000) {
 
   const bypass = detectStep5BypassState();
   if (bypass?.skip) {
-    return { success: true, addPhonePage: Boolean(bypass.addPhonePage), assumed: true, timedOut: true };
+    return {
+      success: true,
+      addPhonePage: Boolean(bypass.addPhonePage),
+      assumed: true,
+      assumedSuccess: true,
+      timedOut: true,
+    };
   }
 
   return {
     success: true,
     assumed: true,
+    assumedSuccess: true,
     timedOut: true,
   };
 }
